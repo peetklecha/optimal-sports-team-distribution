@@ -1,94 +1,62 @@
-import { readCSVObjects } from "https://deno.land/x/csv@v0.6.0/mod.ts";
+import {
+  readCSVObjects,
+  writeCSVObjects,
+} from "https://deno.land/x/csv@v0.6.0/mod.ts";
+import { MSA } from "./MSA.ts";
 
-interface Row {
-	msa: string, pop: string,
+// populate MSA.allMSAs with data
+await read("./us2020.csv");
+await read("./pr2020.csv");
+await read("./ca2016.csv");
+
+// get the top 128 MSAs by population
+MSA.allMSAs.sort((a, b) => b.pop - a.pop);
+const top128 = MSA.allMSAs.slice(0, 128);
+
+// for as long as
+// i) the lowest MSA by population per team has only one team and
+// ii) the highest MSA by pop/team would still be on the list if we gave it one more team
+// take the MSA which has the highest population per team and give it one more team, and remove the lowest MSA from the list.
+// (the second condition never matters for this particular data set)
+let [top] = top128;
+let last = top128.pop() as MSA;
+while (last.teams < 2 && top.nextPop > last.divPop) {
+  top.teams += 1;
+  top128.sort((a, b) => b.divPop - a.divPop);
+  [top] = top128;
+  last = top128.pop() as MSA;
 }
 
-function isRow(obj: unknown): obj is Row {
-	return typeof obj === 'object' && obj !== null && 'msa' in obj && 'pop' in obj
-}
+// put the last team we popped off back on the stack, we're keeping it after all
+top128.push(last);
 
-class MSA {
-	name: string
-	pop: number
-	divisions: number
-	constructor(row: Row) {
-		this.name = row.msa;
-		this.pop = +row.pop.replaceAll(',', '').replaceAll(/\s/g, '').replaceAll(/\t/g, '')
-		this.divisions = 1
-	}
+// sort by overall population descending and write to CSV
+top128.sort((a, b) => b.pop - a.pop);
+await writeResults();
 
-	get divPop() { return this.pop / this.divisions }
-	get nextPop() { return this.pop / (this.divisions + 1) }
-  get shortname() { return this.name.slice(0, 10) }
-}
 
-const data: MSA[] = [];
 
+// helpers
 async function read(filename: string) {
-	const file = await Deno.open(filename);
-	for await (const row of readCSVObjects(file)) {
-		if (isRow(row)) data.push(new MSA(row));
-	}
-	file.close();
+  const file = await Deno.open(filename);
+  for await (const row of readCSVObjects(file)) MSA.ingest(row);
+  file.close();
 }
 
-await read('./us2020.csv');
-await read('./pr2020.csv');
-await read('./ca2016.csv');
+async function writeResults() {
+  const file = await Deno.open("./results.csv", {
+    write: true,
+    create: true,
+    truncate: true,
+  });
+  const header = ["name", "teams", "pop"];
+  const output = top128.map(({ name, pop, teams }) => ({
+    name,
+    pop: `${pop}`,
+    teams: `${teams}`,
+  }));
 
-data.sort((a, b) => b.pop - a.pop)
+  await writeCSVObjects(file, output, { header });
 
-const top128 = data.slice(0, 128)
-
-console.log(top128.reduce((sum, msa) => sum + msa.divisions, 0))
-
-function notDone(){
-	const [first] = top128;
-	const last = top128.at(-1) as MSA;
-	return first.nextPop > last.divPop;
-	// const prospect = top128.reduce((nextBest, msa) => nextBest.nextPop > msa.nextPop ? nextBest : msa);
-	// const last = top128.reduce((worst, msa) => worst.divPop < msa.divPop ? worst : msa);
-	// if (prospect.nextPop > last.divPop) {
-	// 	console.log(`${prospect.name} (/${prospect.divisions + 1} => ${prospect.nextPop}) > ${last.name} (/${prospect.divisions} => ${prospect.divPop})`)
-	// 	return true;
-	// }
+  file.close();
 }
-
-let error = false;
-
-while (notDone()) {
-  const [top] = top128;
-	const msa = top128.pop() as MSA;
-	if (msa.divisions > 1) {
-		top128.push(msa);
-    console.log(`${top.shortname}: !${top.divisions} => ${top.divisions + 1}!`)
-    console.log(`!<-! ${msa.shortname}`);
-		error = true;
-		break;
-	}
-	// const top = top128.reduce((nextBest, msa) => nextBest.nextPop > msa.nextPop ? nextBest : msa);
-	top.divisions += 1;
-	console.log(`${top.shortname}: ${top.divisions -1} => ${top.divisions}`)
-	console.log(` <- ${msa.name}`)
-	top128.sort((a,b) => b.divPop - a.divPop)
-}
-
-top128.sort((a,b) => b.pop - a.pop)
-
-console.log(`Name of MSA         \tTeams\tPop/Team\tTotal Pop`)
-for (const msa of top128) {
-	console.log(`${msa.name.slice(0,20)}${msa.name.length < 20 ? " ".repeat(20 - msa.name.length) : ''}\t${msa.divisions}\t${msa.divPop.toFixed(0)}\t\t${msa.pop}`)
-}
-
-console.log(top128.reduce((sum, msa) => sum + msa.divisions, 0))
-if (error) console.log('oops!')
-
-const top128raw = data.slice(0, 128)
-
-let divs = 1
-const [nyc] = data
-while (nyc.pop / divs > (top128raw.at(-divs) as MSA).pop) divs += 1;
-console.log(`NYC/${divs} = ${nyc.pop/divs}`);
-
-export { data, nyc, divs }
